@@ -1,0 +1,709 @@
+{
+  "name": "Meal Planner — 1. Propose",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 6"
+            }
+          ]
+        }
+      },
+      "id": "node-schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -384,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "family_profile",
+        "returnAll": true
+      },
+      "id": "node-get-family-profile",
+      "name": "Get Family Profile",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        624,
+        304
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "YOUR_SUPABASE_CREDENTIAL_ID",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "meal_history",
+        "returnAll": true
+      },
+      "id": "node-get-meal-history",
+      "name": "Get Meal History",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        848,
+        304
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "YOUR_SUPABASE_CREDENTIAL_ID",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const familyProfile = $('Get Family Profile').first().json;\n\n// Compute upcoming Monday (week_of)\nconst now = new Date();\nconst day = now.getDay();\nconst daysUntilMonday = day === 0 ? 1 : (8 - day) % 7 || 7;\nconst monday = new Date(now);\nmonday.setDate(now.getDate() + daysUntilMonday);\nconst weekOf = monday.toISOString().split('T')[0];\n\n// Current date context for seasonal awareness\nconst currentMonth = now.toLocaleString('en-US', { month: 'long' });\nconst currentYear = now.getFullYear();\nconst hemisphere = 'northern';\n\n// Proposal count driven by family config\nconst targetApprovals = familyProfile.target_approvals || 2;\nconst numProposals = targetApprovals * 2;\n\n// Last 3 weeks of meal history titles\nconst history = $input.all().map(i => i.json);\nconst cutoff = new Date();\ncutoff.setDate(cutoff.getDate() - 21);\nconst recentTitles = history\n  .filter(h => new Date(h.week_of) >= cutoff)\n  .map(h => h.title)\n  .join('\\n') || 'None yet';\n\nreturn [{ json: {\n  week_of: weekOf,\n  current_month: currentMonth,\n  current_year: currentYear,\n  hemisphere,\n  family_profile: familyProfile,\n  recent_titles: recentTitles,\n  target_approvals: targetApprovals,\n  num_proposals: numProposals\n} }];"
+      },
+      "id": "node-bundle-context",
+      "name": "Bundle Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const bundleCtx = $('Bundle Context').first().json;\nconst weekOf = bundleCtx.week_of;\nconst targetApprovals = bundleCtx.target_approvals || 2;\nconst spoonacularMap = $('Format Spoonacular Results').first().json.spoonacular_map;\n\nconst parsed = $input.first().json.output;\nconst candidates = parsed?.candidates;\n\nif (!candidates || !Array.isArray(candidates)) {\n  throw new Error('Missing candidates array. Got: ' + JSON.stringify($input.first().json).substring(0, 300));\n}\n\nfunction normalize(name) {\n  return name.toLowerCase()\n    .replace(/^(fresh|dried|ground|chopped|diced|minced|sliced)\\s+/i, '')\n    .replace(/s$/, '').trim();\n}\n\nconst sets = candidates.map((c, i) => ({\n  idx: i + 1, title: c.title,\n  ingredients: new Set(c.key_ingredients.map(ing => normalize(ing.name)))\n}));\n\nfunction combos(arr, k) {\n  if (k === 0) return [[]];\n  if (arr.length < k) return [];\n  const [first, ...rest] = arr;\n  return [...combos(rest, k-1).map(c => [first, ...c]), ...combos(rest, k)];\n}\n\n// Use target_approvals as the subset size for overlap scoring\nconst scored = combos(sets, targetApprovals).map(group => {\n  const shared = [...group[0].ingredients].filter(i =>\n    group.slice(1).every(m => m.ingredients.has(i))\n  );\n  return { indices: group.map(t => t.idx), shared_count: shared.length, shared };\n}).sort((a, b) => b.shared_count - a.shared_count).slice(0, 3);\n\n// Enrich candidates with Spoonacular URLs + nutrition\nconst enrichedCandidates = candidates.map(c => {\n  const spData = (spoonacularMap || {})[String(c.spoonacular_id)] || {};\n  return {\n    ...c,\n    source_url: spData.source_url || null,\n    image_url: spData.image_url || null,\n    nutrition: spData.nutrition || null\n  };\n});\n\nreturn [{ json: { week_of: weekOf, target_approvals: targetApprovals, candidates: enrichedCandidates, top_combos: scored } }];"
+      },
+      "id": "node-parse-score",
+      "name": "Parse + Score Overlap",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        352,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const { candidates, week_of } = $input.first().json;\nreturn candidates.map(c => ({\n  json: {\n    week_of,\n    title: c.title,\n    description: c.description,\n    cuisine: c.cuisine || null,\n    protein: c.protein || null,\n    active_time_min: c.active_time_min || null,\n    key_ingredients: c.key_ingredients,\n    source_url: c.source_url || null,\n    image_url: c.image_url || null,\n    nutrition: c.nutrition || null,\n    status: 'pending'\n  }\n}));"
+      },
+      "id": "node-split-items",
+      "name": "Split to Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        576,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "tableId": "proposals",
+        "dataToSend": "autoMapInputData"
+      },
+      "id": "node-insert-proposals",
+      "name": "Insert Proposals",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        784,
+        544
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "YOUR_SUPABASE_CREDENTIAL_ID",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const { target_approvals: TARGET_APPROVALS, top_combos: topCombos } = $('Parse + Score Overlap').first().json;\nconst rows = $input.all().map(i => i.json);\nconst weekOf = rows[0].week_of;\n\nconst TRUNCATE_LEN = 20;\nconst truncate = (s, n) => s.length > n ? s.slice(0, n) + '…' : s;\n\nconst mealList = rows.map((r, idx) => {\n  const n = r.nutrition;\n  const macroStr = (n?.calories && n?.protein_g)\n    ? ` | ${n.calories} cal · ${n.protein_g}g protein`\n    : '';\n  return `${idx + 1}. *${r.title}* — ${r.description}${macroStr}`;\n}).join('\\n\\n');\n\nconst comboHints = topCombos.map(c =>\n  `  • ${c.indices.join(' + ')} → shares ${c.shared_count} ingredient${c.shared_count !== 1 ? 's' : ''}`\n).join('\\n');\n\nconst text = `🍽️ Meal ideas — week of ${weekOf}\\n\\n${mealList}\\n\\n🛒 Budget combos (most shared ingredients):\\n${comboHints}\\n\\nTap to approve/deny. Either parent can decide. First tap wins.\\nTarget: ${TARGET_APPROVALS} approvals.`;\n\nconst inlineKeyboard = rows.map((r, idx) => {\n  const label = `${idx + 1}. ${truncate(r.title, TRUNCATE_LEN)}`;\n  const buttons = [\n    {text: `${label} ✅`, callback_data: `approve:${r.id}`},\n    {text: `❌`, callback_data: `deny:${r.id}`}\n  ];\n  if (r.source_url) {\n    buttons.push({text: `🔗`, url: r.source_url});\n  }\n  return buttons;\n});\n\nconst mediaGroup = rows\n  .filter(r => r.image_url)\n  .map((r, idx) => ({\n    type: 'photo',\n    media: r.image_url,\n    caption: `${idx + 1}. ${r.title}`\n  }));\n\nreturn [{ json: { text, chat_id: $env.TELEGRAM_CHAT_ID, reply_markup: {inline_keyboard: inlineKeyboard}, media_group: mediaGroup } }];"
+      },
+      "id": "node-format-telegram",
+      "name": "Format Telegram Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1008,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/botYOUR_TELEGRAM_BOT_TOKEN/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $('Format Telegram Message').first().json.chat_id }}"
+            },
+            {
+              "name": "text",
+              "value": "={{ $('Format Telegram Message').first().json.text }}"
+            },
+            {
+              "name": "parse_mode",
+              "value": "Markdown"
+            },
+            {
+              "name": "reply_markup",
+              "value": "={{ JSON.stringify($('Format Telegram Message').first().json.reply_markup) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-send-telegram",
+      "name": "Send to Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1456,
+        544
+      ],
+      "webhookId": "WEBHOOK_ID_PLACEHOLDER"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a family meal planner. Select {{ $json.num_proposals }} dinner candidates for the week of {{ $json.week_of }} from the Spoonacular recipes listed below.\n\nToday's date context: {{ $json.current_month }} {{ $json.current_year }} ({{ $json.hemisphere }} hemisphere).\n\nFamily profile:\n{{ JSON.stringify($json.family_profile, null, 2) }}\n\nRecently cooked (avoid repeating):\n{{ $json.recent_titles }}\n\nAvailable Spoonacular recipes — pick {{ $json.num_proposals }} from this list:\n{{ $json.spoonacular_recipes }}\n\nSelection constraints:\n- Max 45 min active time\n- Respect all allergies (non-negotiable): {{ JSON.stringify($json.family_profile.allergies) }}\n- Avoid dislikes: {{ JSON.stringify($json.family_profile.dislikes) }}\n- At most one candidate per primary protein across the {{ $json.num_proposals }}\n- Leanna is focused on weight loss — prefer high-protein, macro-friendly options\n- Serves 3+ (leftovers welcome)\n\nCRITICAL: Choose recipes whose ingredient lists OVERLAP meaningfully — the family will pick {{ $json.target_approvals }} and wants a small grocery bill.\n\nFor each selected recipe return the exact spoonacular_id integer (from the [ID:...] tag), a short family-friendly description, and the key ingredients you'll use for overlap scoring.",
+        "hasOutputParser": true
+      },
+      "id": "node-llm-chain",
+      "name": "Generate Candidates",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [
+        -16,
+        544
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "claude-sonnet-4-6",
+          "mode": "list",
+          "cachedResultName": "Claude Sonnet 4.6"
+        },
+        "options": {
+          "temperature": 0.7
+        }
+      },
+      "id": "node-anthropic-model",
+      "name": "Anthropic Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        -48,
+        736
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "YOUR_ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"candidates\": [\n    {\n      \"spoonacular_id\": 716429,\n      \"title\": \"Sheet-pan chicken fajitas\",\n      \"description\": \"Juicy chicken with colorful peppers and onions, ready in 25 min\",\n      \"cuisine\": \"Tex-Mex\",\n      \"protein\": \"chicken\",\n      \"active_time_min\": 25,\n      \"key_ingredients\": [\n        {\"name\": \"chicken breast\", \"qty\": 1.5, \"unit\": \"lb\"},\n        {\"name\": \"bell pepper\", \"qty\": 3, \"unit\": \"whole\"}\n      ]\n    }\n  ]\n}",
+        "autoFix": true
+      },
+      "id": "node-output-parser",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        48,
+        736
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "claude-haiku-4-5-20251001",
+          "mode": "list",
+          "cachedResultName": "Claude Haiku 4.5"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        48,
+        880
+      ],
+      "id": "f886cfb5-ec6b-4d2c-b310-a35b9cc27fe8",
+      "name": "Anthropic Chat Model1",
+      "credentials": {
+        "anthropicApi": {
+          "id": "YOUR_ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://api.spoonacular.com/recipes/complexSearch",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "apiKey",
+              "value": "YOUR_SPOONACULAR_API_KEY"
+            },
+            {
+              "name": "cuisine",
+              "value": "={{ $json.family_profile.cuisine_prefs.liked.join(',') }}"
+            },
+            {
+              "name": "excludeIngredients",
+              "value": "={{ ($json.family_profile.dislikes || []).join(',') }}"
+            },
+            {
+              "name": "intolerances",
+              "value": "={{ ($json.family_profile.allergies || []).join(',') }}"
+            },
+            {
+              "name": "equipment",
+              "value": "={{ ($json.family_profile.equipment || []).map(e => e.replace(/_/g, ' ')).join(',') }}"
+            },
+            {
+              "name": "maxReadyTime",
+              "value": "45"
+            },
+            {
+              "name": "sort",
+              "value": "popularity"
+            },
+            {
+              "name": "sortDirection",
+              "value": "desc"
+            },
+            {
+              "name": "number",
+              "value": "24"
+            },
+            {
+              "name": "addRecipeInformation",
+              "value": "true"
+            },
+            {
+              "name": "addRecipeNutrition",
+              "value": "true"
+            },
+            {
+              "name": "type",
+              "value": "main course"
+            },
+            {
+              "name": "instructionsRequired",
+              "value": "true"
+            },
+            {
+              "name": "minServings",
+              "value": "3"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-search-spoonacular",
+      "name": "Search Spoonacular",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1248,
+        304
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "jsCode": "const bundleCtx = $('Bundle Context').first().json;\nconst results = $input.first().json.results || [];\n\nif (results.length === 0) {\n  throw new Error('Spoonacular returned no results. Check API key and query params.');\n}\n\nfunction getNutrient(nutrients, name) {\n  const n = (nutrients || []).find(n => n.name === name);\n  return n ? Math.round(n.amount) : null;\n}\n\n// Build lookup map id -> {image_url, source_url, nutrition}\nconst spoonacularMap = {};\nfor (const r of results) {\n  const nutrients = r.nutrition?.nutrients || [];\n  spoonacularMap[String(r.id)] = {\n    image_url: `https://img.spoonacular.com/recipes/${r.id}-480x360.jpg`,\n    source_url: r.sourceUrl || null,\n    likes: r.aggregateLikes || 0,\n    score: Math.round(r.spoonacularScore || 0),\n    nutrition: {\n      calories: getNutrient(nutrients, 'Calories'),\n      protein_g: getNutrient(nutrients, 'Protein'),\n      carbs_g: getNutrient(nutrients, 'Carbohydrates'),\n      fat_g: getNutrient(nutrients, 'Fat'),\n      fiber_g: getNutrient(nutrients, 'Fiber')\n    }\n  };\n}\n\n// Build numbered text list for Claude — include macros so it can make protein-aware picks\nconst recipeList = results.map((r, i) => {\n  const sp = spoonacularMap[String(r.id)];\n  const cal = sp.nutrition.calories;\n  const pro = sp.nutrition.protein_g;\n  const macroStr = (cal && pro) ? `, ${cal} cal, ${pro}g protein` : '';\n  return `${i + 1}. [ID:${r.id}] \"${r.title}\" (~${r.readyInMinutes}min, ${r.aggregateLikes || 0} likes, score: ${sp.score}${macroStr})`;\n}).join('\\n');\n\nreturn [{\n  json: {\n    ...bundleCtx,\n    spoonacular_recipes: recipeList,\n    spoonacular_map: spoonacularMap\n  }\n}];"
+      },
+      "id": "node-format-spoonacular",
+      "name": "Format Spoonacular Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1456,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/botYOUR_TELEGRAM_BOT_TOKEN/sendMediaGroup",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $json.chat_id }}"
+            },
+            {
+              "name": "media",
+              "value": "={{ JSON.stringify($json.media_group) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-send-photo-album",
+      "name": "Send Photo Album",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1248,
+        544
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {},
+      "id": "node-exec-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        -384,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "proposals",
+        "returnAll": true,
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "created_at",
+              "condition": "gte",
+              "keyValue": "={{ $now.minus({days: 8}).toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "node-check-proposals",
+      "name": "Check Active Proposals",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -80,
+        304
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "YOUR_SUPABASE_CREDENTIAL_ID",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const proposals = $input.all().map(i => i.json).filter(p => p.id);\n\n// Only consider proposals from the most recent week_of\nconst weeks = [...new Set(proposals.map(p => p.week_of))].sort().reverse();\nconst latestWeek = weeks[0];\nconst current = latestWeek\n  ? proposals.filter(p => p.week_of === latestWeek)\n  : [];\n\nconst active = current.filter(p => ['pending', 'approved'].includes(p.status));\nreturn [{ json: { hasActive: active.length > 0, activeCount: active.length, week_of: latestWeek || null } }];"
+      },
+      "id": "node-eval-guard",
+      "name": "Evaluate Guard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        144,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "guard-check",
+              "leftValue": "={{ $json.hasActive }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-guard-if",
+      "name": "Proposals Already Active?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        368,
+        304
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Get Family Profile": {
+      "main": [
+        [
+          {
+            "node": "Get Meal History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Meal History": {
+      "main": [
+        [
+          {
+            "node": "Bundle Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse + Score Overlap": {
+      "main": [
+        [
+          {
+            "node": "Split to Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split to Items": {
+      "main": [
+        [
+          {
+            "node": "Insert Proposals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Proposals": {
+      "main": [
+        [
+          {
+            "node": "Format Telegram Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model": {
+      "main": [
+        []
+      ],
+      "ai_languageModel": [
+        [
+          {
+            "node": "Generate Candidates",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "main": [
+        []
+      ],
+      "ai_outputParser": [
+        [
+          {
+            "node": "Generate Candidates",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Structured Output Parser",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Candidates": {
+      "main": [
+        [
+          {
+            "node": "Parse + Score Overlap",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bundle Context": {
+      "main": [
+        [
+          {
+            "node": "Search Spoonacular",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Spoonacular": {
+      "main": [
+        [
+          {
+            "node": "Format Spoonacular Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Spoonacular Results": {
+      "main": [
+        [
+          {
+            "node": "Generate Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Telegram Message": {
+      "main": [
+        [
+          {
+            "node": "Send Photo Album",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Photo Album": {
+      "main": [
+        [
+          {
+            "node": "Send to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Active Proposals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Active Proposals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Active Proposals": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Guard": {
+      "main": [
+        [
+          {
+            "node": "Proposals Already Active?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Proposals Already Active?": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Get Family Profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "7586481a-9b60-4b51-81bb-331563819a8c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "10b2f4ffaf3085a33718b7f3d411bc58b3e673b4ceb89f405af2f9344780b763"
+  },
+  "id": "WORKFLOW_1_PROPOSE_ID",
+  "tags": []
+}

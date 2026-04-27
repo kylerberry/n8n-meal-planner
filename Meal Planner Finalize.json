@@ -1,0 +1,656 @@
+{
+  "name": "Meal Planner — 3. Finalize",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "wf3-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        -64,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "family_profile",
+        "returnAll": true
+      },
+      "id": "wf3-get-profile",
+      "name": "Get Family Profile",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        224,
+        304
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "YOUR_SUPABASE_CREDENTIAL_ID",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "proposals",
+        "returnAll": true,
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "status",
+              "condition": "eq",
+              "keyValue": "approved"
+            },
+            {
+              "keyName": "created_at",
+              "condition": "gte",
+              "keyValue": "={{ $now.minus({days: 8}).toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "wf3-get-proposals",
+      "name": "Get Approved Proposals",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        448,
+        304
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "YOUR_SUPABASE_CREDENTIAL_ID",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Generate a complete recipe for this family meal.\n\nTitle: {{ $json.title }}\nDescription: {{ $json.description }}\nCuisine: {{ $json.cuisine }}\nProtein: {{ $json.protein }}\nEstimated active time: {{ $json.active_time_min }} minutes\nKey ingredients already in the plan: {{ JSON.stringify($json.key_ingredients) }}\nFamily notes: {{ $('Get Family Profile').first().json.portion_notes }}\n\nRequirements:\n- Serves 3 (leftovers welcome)\n- ≤45 min active time\n- Numbered steps with timing per step (e.g. \"Step 1 (5 min): ...\")\n- Complete ingredient list with every item — exact qty, unit, and section\n- Sections must be one of: produce | protein | dairy | pantry | frozen | spice\n- Note anything that can be prepped ahead of time\n\nNutrition per serving is already known — do NOT include or estimate it.\n\nReturn strict JSON only, no markdown:",
+        "hasOutputParser": true
+      },
+      "id": "wf3-llm-chain",
+      "name": "Generate Full Recipe",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [
+        224,
+        528
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "claude-haiku-4-5-20251001",
+          "mode": "list",
+          "cachedResultName": "Claude Haiku 4.5"
+        },
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "wf3-anthropic",
+      "name": "Anthropic Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        176,
+        736
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "YOUR_ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"ingredients\": [\n    {\"name\": \"chicken breast\", \"qty\": 1.5, \"unit\": \"lb\", \"section\": \"protein\"},\n    {\"name\": \"bell pepper\", \"qty\": 3, \"unit\": \"whole\", \"section\": \"produce\"}\n  ],\n  \"steps\": [\n    \"Step 1 (5 min): Preheat oven to 425°F and line a baking sheet.\",\n    \"Step 2 (10 min): Slice chicken and vegetables into strips.\"\n  ],\n  \"prep_ahead_notes\": \"Slice and marinate chicken up to 24 hours ahead.\"\n}",
+        "autoFix": true
+      },
+      "id": "wf3-parser",
+      "name": "Recipe Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        288,
+        736
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const proposal = $('Get Approved Proposals').item.json;\nconst fullRecipe = $input.item.json.output;\n\nif (!fullRecipe?.ingredients || !fullRecipe?.steps) {\n  throw new Error(`Full recipe missing for \"${proposal.title}\". Got: ${JSON.stringify($input.item.json).substring(0, 200)}`);\n}\n\nreturn { ...proposal, full_recipe: fullRecipe };"
+      },
+      "id": "wf3-merge",
+      "name": "Merge Recipe Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        624,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "proposals",
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $json.id }}"
+            }
+          ]
+        },
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "full_recipe",
+              "fieldValue": "={{ JSON.stringify($json.full_recipe) }}"
+            }
+          ]
+        }
+      },
+      "id": "wf3-update",
+      "name": "Update Proposals",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        848,
+        528
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "YOUR_SUPABASE_CREDENTIAL_ID",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all().map(i => i.json);\n\n// Re-fetch full data from Merge Recipe Data since Update Proposals output is the DB response\nconst allRecipes = $('Merge Recipe Data').all().map(i => i.json);\n\n// Only keep recipes from the most recent week_of to avoid cross-week overlap\nconst weeks = [...new Set(allRecipes.map(r => r.week_of))].sort().reverse();\nconst latestWeek = weeks[0];\nconst recipes = allRecipes.filter(r => r.week_of === latestWeek);\n\n// Unit normalization map\nconst UNIT_NORMALIZE = {\n  lbs: 'lb', tbsps: 'tbsp', tsps: 'tsp',\n  cups: 'cup', ozs: 'oz', cloves: 'clove',\n  cans: 'can', slices: 'slice', pieces: 'piece',\n  whole: '', wholes: '',\n};\nfunction normalizeUnit(u) {\n  const lower = (u || '').toLowerCase().trim();\n  return UNIT_NORMALIZE[lower] ?? lower;\n}\n\nconst merged = {};\nconst VALID_SECTIONS = ['produce','protein','dairy','pantry','frozen','spice'];\n\nfor (const recipe of recipes) {\n  for (const ing of (recipe.full_recipe?.ingredients || [])) {\n    const normUnit = normalizeUnit(ing.unit);\n    const key = `${ing.name.toLowerCase().trim()}|${normUnit}`;\n    if (!merged[key]) {\n      merged[key] = {\n        name: ing.name,\n        qty: 0,\n        unit: normUnit,\n        section: VALID_SECTIONS.includes(ing.section) ? ing.section : 'pantry',\n        used_in: []\n      };\n    }\n    merged[key].qty += Number(ing.qty) || 0;\n    merged[key].used_in.push(recipe.title);\n  }\n}\n\nconst bySection = {};\nfor (const item of Object.values(merged)) {\n  (bySection[item.section] ||= []).push(item);\n}\n\nreturn [{ json: { recipes, grocery_list: bySection } }];"
+      },
+      "id": "wf3-consolidate",
+      "name": "Consolidate Grocery List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1072,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const recipes = $('Consolidate Grocery List').first().json.recipes;\nconst dedupedItems = $input.first().json.output.items;\n\nconst SECTION_EMOJI = {\n  produce: '🥦', protein: '🥩', dairy: '🧀',\n  pantry: '🥫', frozen: '🧊', spice: '🧂'\n};\n\nconst messages = [];\n\n// One message per meal with full details\nfor (let i = 0; i < recipes.length; i++) {\n  const r = recipes[i];\n  const n = r.nutrition;\n\n  let text = `🍽️ *${i + 1}. ${r.title}*\\n`;\n\n  if (r.source_url) {\n    text += `${r.source_url}\\n`;\n  }\n\n  text += `\\n${r.description}`;\n\n  if (n) {\n    text += `\\n\\n_Per serving: ${n.calories} cal · ${n.protein_g}g protein · ${n.carbs_g}g carbs · ${n.fat_g}g fat_`;\n  }\n\n  if (r.full_recipe?.steps?.length) {\n    text += '\\n\\n*Instructions:*';\n    for (const step of r.full_recipe.steps) {\n      text += `\\n${step}`;\n    }\n  }\n\n  if (r.full_recipe?.prep_ahead_notes) {\n    text += `\\n\\n💡 *Prep ahead:* ${r.full_recipe.prep_ahead_notes}`;\n  }\n\n  messages.push({ json: { text, chat_id: $env.TELEGRAM_CHAT_ID } });\n}\n\n// Regroup deduped items by section\nconst bySection = {};\nfor (const item of dedupedItems) {\n  (bySection[item.section] ||= []).push(item);\n}\n\n// Consolidated grocery list as final message\nconst groceryLines = ['produce','protein','dairy','pantry','frozen','spice']\n  .filter(s => bySection[s]?.length)\n  .map(s => {\n    const items = bySection[s]\n      .map(item => {\n        const qty = item.qty % 1 === 0 ? item.qty : parseFloat(item.qty.toFixed(1));\n        return `  • ${qty} ${item.unit} ${item.name}`.trim();\n      })\n      .join('\\n');\n    return `${SECTION_EMOJI[s]} *${s.charAt(0).toUpperCase() + s.slice(1)}*\\n${items}`;\n  }).join('\\n\\n');\n\nmessages.push({ json: { text: `🛒 *Grocery List*\\n\\n${groceryLines}`, chat_id: $env.TELEGRAM_CHAT_ID } });\n\nreturn messages;"
+      },
+      "id": "wf3-format",
+      "name": "Format Final Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        976,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/botYOUR_TELEGRAM_BOT_TOKEN/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $json.chat_id }}"
+            },
+            {
+              "name": "text",
+              "value": "={{ $json.text }}"
+            },
+            {
+              "name": "parse_mode",
+              "value": "Markdown"
+            },
+            {
+              "name": "disable_web_page_preview",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "wf3-send",
+      "name": "Send Meal Plan",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1424,
+        960
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const recipes = $('Consolidate Grocery List').first().json.recipes;\nreturn recipes.map(r => ({\n  json: {\n    week_of: r.week_of,\n    title: r.title,\n    feedback: null\n  }\n}));"
+      },
+      "id": "wf3-prep-history",
+      "name": "Prep History Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1424,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "tableId": "meal_history",
+        "dataToSend": "autoMapInputData"
+      },
+      "id": "wf3-insert-history",
+      "name": "Insert meal_history",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1616,
+        784
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "YOUR_SUPABASE_CREDENTIAL_ID",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "finalize-test",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "wf3-test-trigger",
+      "name": "Test Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -64,
+        512
+      ],
+      "webhookId": "WEBHOOK_ID_PLACEHOLDER"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "claude-haiku-4-5-20251001",
+          "mode": "list",
+          "cachedResultName": "Claude Haiku 4.5"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        288,
+        896
+      ],
+      "id": "07bf3f54-f0af-4876-bab7-8cffa9d86362",
+      "name": "Anthropic Chat Model1",
+      "credentials": {
+        "anthropicApi": {
+          "id": "YOUR_ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a grocery list deduplication assistant. Below is a grocery list grouped by section, in JSON format. Merge items that are clearly the same ingredient despite slightly different names or unit formats.\n\nRules:\n- Merge near-duplicates: \"shredded cheese\" + \"shredded cheddar cheese\" → keep the more specific name, sum quantities\n- Standardize units to: tsp, tbsp, cup, oz, lb, clove, can, whole (no plurals)\n- Convert equivalent units before summing (e.g. 1 teaspoon + 2 tsp = 3 tsp)\n- Do NOT merge genuinely different items (e.g. \"olive oil\" vs \"sesame oil\")\n- Keep every item — do not drop anything that has no duplicate\n- Section must be one of: produce | protein | dairy | pantry | frozen | spice\n\nInput grocery list:\n{{ JSON.stringify($json.grocery_list, null, 2) }}\n\nReturn strict JSON only — no markdown fences, no prose.",
+        "hasOutputParser": true
+      },
+      "id": "wf3-dedup-chain",
+      "name": "Deduplicate Grocery List",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [
+        624,
+        784
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"items\": [\n    {\"name\": \"chicken breast\", \"qty\": 3, \"unit\": \"lb\", \"section\": \"protein\"},\n    {\"name\": \"ground beef\", \"qty\": 1, \"unit\": \"lb\", \"section\": \"protein\"},\n    {\"name\": \"bell pepper\", \"qty\": 3, \"unit\": \"whole\", \"section\": \"produce\"},\n    {\"name\": \"garlic\", \"qty\": 6, \"unit\": \"clove\", \"section\": \"produce\"},\n    {\"name\": \"olive oil\", \"qty\": 3, \"unit\": \"tbsp\", \"section\": \"pantry\"},\n    {\"name\": \"cumin\", \"qty\": 2, \"unit\": \"tsp\", \"section\": \"spice\"}\n  ]\n}",
+        "autoFix": true
+      },
+      "id": "wf3-dedup-parser",
+      "name": "Grocery Dedup Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        720,
+        960
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "claude-haiku-4-5-20251001",
+          "mode": "list",
+          "cachedResultName": "Claude Haiku 4.5"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        592,
+        960
+      ],
+      "id": "f8c14a8f-8122-425e-a693-5a9ffcb7f24b",
+      "name": "Anthropic Chat Model2",
+      "credentials": {
+        "anthropicApi": {
+          "id": "YOUR_ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "claude-haiku-4-5-20251001",
+          "mode": "list",
+          "cachedResultName": "Claude Haiku 4.5"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        720,
+        1120
+      ],
+      "id": "a199384b-22ef-4edf-a48a-e48cb7a6167c",
+      "name": "Anthropic Chat Model3",
+      "credentials": {
+        "anthropicApi": {
+          "id": "YOUR_ANTHROPIC_CREDENTIAL_ID",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "wf3-batch",
+      "name": "Send One at a Time",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1200,
+        784
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Family Profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Family Profile": {
+      "main": [
+        [
+          {
+            "node": "Get Approved Proposals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Approved Proposals": {
+      "main": [
+        [
+          {
+            "node": "Generate Full Recipe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Full Recipe": {
+      "main": [
+        [
+          {
+            "node": "Merge Recipe Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Generate Full Recipe",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recipe Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Generate Full Recipe",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Recipe Data": {
+      "main": [
+        [
+          {
+            "node": "Update Proposals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Proposals": {
+      "main": [
+        [
+          {
+            "node": "Consolidate Grocery List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prep History Items": {
+      "main": [
+        [
+          {
+            "node": "Insert meal_history",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Test Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Family Profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Recipe Output Parser",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consolidate Grocery List": {
+      "main": [
+        [
+          {
+            "node": "Deduplicate Grocery List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Grocery Dedup Parser": {
+      "main": [
+        []
+      ],
+      "ai_outputParser": [
+        [
+          {
+            "node": "Deduplicate Grocery List",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deduplicate Grocery List": {
+      "main": [
+        [
+          {
+            "node": "Format Final Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model2": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Deduplicate Grocery List",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model3": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Grocery Dedup Parser",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Final Message": {
+      "main": [
+        [
+          {
+            "node": "Send One at a Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send One at a Time": {
+      "main": [
+        [
+          {
+            "node": "Prep History Items",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Meal Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Meal Plan": {
+      "main": [
+        [
+          {
+            "node": "Send One at a Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "fa1ac771-255c-4952-a5d3-e1e6a032afe5",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "10b2f4ffaf3085a33718b7f3d411bc58b3e673b4ceb89f405af2f9344780b763"
+  },
+  "id": "WORKFLOW_3_FINALIZE_ID",
+  "tags": []
+}

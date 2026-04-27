@@ -1,0 +1,957 @@
+{
+  "name": "Meal Planner — 2. Approval Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "meal-planner-approval",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook-trigger",
+      "name": "Telegram Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -192,
+        224
+      ],
+      "webhookId": "WEBHOOK_ID_PLACEHOLDER"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"ok\": true}",
+        "options": {}
+      },
+      "id": "node-respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        48,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\n\n// Check for /planmeals bot command\nif (body.message?.text?.startsWith('/planmeals')) {\n  return [{ json: { type: 'planmeals', chatId: body.message.chat.id, skip: true } }];\n}\n\nif (!body.callback_query) {\n  return [{ json: { type: 'unknown', skip: true } }];\n}\n\nconst callbackQuery = body.callback_query;\nconst data = callbackQuery.data;\nconst username = callbackQuery.from?.username || callbackQuery.from?.first_name || 'Unknown';\nconst callbackQueryId = callbackQuery.id;\nconst chatId = callbackQuery.message?.chat?.id;\nconst messageId = callbackQuery.message?.message_id;\n\nconst [decision, proposalId] = data.split(':');\n\nif (!proposalId || !['approve', 'deny'].includes(decision)) {\n  return [{ json: { type: 'unknown', skip: true } }];\n}\n\nlet displayName = username;\ntry {\n  const userMap = JSON.parse($env.TG_USER_MAP || '{}');\n  displayName = userMap[username] || username;\n} catch(e) {}\n\nreturn [{ json: { type: 'callback', decision, proposalId, username, displayName, callbackQueryId, chatId, messageId, skip: false } }];"
+      },
+      "id": "node-parse-callback",
+      "name": "Parse Callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        48,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "skip-check",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-skip-check",
+      "name": "Is Valid Callback?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        496,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "tableId": "rpc/approve_proposal",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "p_proposal_id",
+              "fieldValue": "={{ $json.proposalId }}"
+            },
+            {
+              "fieldId": "p_approver",
+              "fieldValue": "={{ $json.displayName }}"
+            },
+            {
+              "fieldId": "p_decision",
+              "fieldValue": "={{ $json.decision === 'approve' ? 'approved' : 'denied' }}"
+            }
+          ]
+        }
+      },
+      "id": "node-rpc-call",
+      "name": "Approve Proposal RPC",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1136,
+        464
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "YOUR_SUPABASE_CREDENTIAL_ID",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "success-check",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-rpc-result",
+      "name": "First Click Wins?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1344,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/botYOUR_TELEGRAM_BOT_TOKEN/answerCallbackQuery",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "callback_query_id",
+              "value": "={{ $('Parse Callback').first().json.callbackQueryId }}"
+            },
+            {
+              "name": "text",
+              "value": "={{ $json.current_status === 'approved' ? '✅ Approved!' : '❌ Denied!' }}"
+            },
+            {
+              "name": "show_alert",
+              "value": "=false"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-notify-success",
+      "name": "Notify Decision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1648,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/botYOUR_TELEGRAM_BOT_TOKEN/answerCallbackQuery",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "callback_query_id",
+              "value": "={{ $('Parse Callback').first().json.callbackQueryId }}"
+            },
+            {
+              "name": "text",
+              "value": "=⚠️ Already {{ $json.current_status }} by {{ $json.approver }}"
+            },
+            {
+              "name": "show_alert",
+              "value": "=true"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-notify-already",
+      "name": "Notify Already Decided",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1584,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "proposals",
+        "returnAll": true,
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "status",
+              "condition": "eq",
+              "keyValue": "approved"
+            },
+            {
+              "keyName": "created_at",
+              "condition": "gte",
+              "keyValue": "={{ $now.minus({days: 8}).toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "node-count-approved",
+      "name": "Count Approvals",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        2064,
+        320
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "YOUR_SUPABASE_CREDENTIAL_ID",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "count-check",
+              "leftValue": "={{ $input.all().length }}",
+              "rightValue": "={{ $('Get Family Profile').first().json.target_approvals || 2 }}",
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-enough-approvals",
+      "name": "2 Approvals Reached?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2304,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/botYOUR_TELEGRAM_BOT_TOKEN/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $('Parse Callback').first().json.chatId }}"
+            },
+            {
+              "name": "text",
+              "value": "=🎉 {{ $('Get Family Profile').first().json.target_approvals || 2 }} meals locked in! Finalizing Sunday 6pm. Reply /finalize to run now."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-locked-in",
+      "name": "Send Locked In Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2544,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "family_profile",
+        "returnAll": true
+      },
+      "id": "node-get-family-profile",
+      "name": "Get Family Profile",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        48,
+        32
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "YOUR_SUPABASE_CREDENTIAL_ID",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "proposals",
+        "returnAll": true,
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "status",
+              "condition": "eq",
+              "keyValue": "approved"
+            },
+            {
+              "keyName": "created_at",
+              "condition": "gte",
+              "keyValue": "={{ $now.minus({days: 8}).toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "node-pre-count",
+      "name": "Count Existing Approvals",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        720,
+        288
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "YOUR_SUPABASE_CREDENTIAL_ID",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "full-check",
+              "leftValue": "={{ $input.all().length }}",
+              "rightValue": "={{ $('Get Family Profile').first().json.target_approvals || 2 }}",
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-already-full",
+      "name": "Already At Target?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        928,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/botYOUR_TELEGRAM_BOT_TOKEN/answerCallbackQuery",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "callback_query_id",
+              "value": "={{ $('Parse Callback').first().json.callbackQueryId }}"
+            },
+            {
+              "name": "text",
+              "value": "🔒 Meals already locked in!"
+            },
+            {
+              "name": "show_alert",
+              "value": "=true"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-notify-full",
+      "name": "Notify Already Full",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1648,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "WORKFLOW_3_FINALIZE_ID",
+        "options": {}
+      },
+      "id": "node-trigger-finalize",
+      "name": "Trigger Finalize",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        2752,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "planmeals-check",
+              "leftValue": "={{ $json.type }}",
+              "rightValue": "planmeals",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-is-planmeals",
+      "name": "Is Planmeals?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        256,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "proposals",
+        "returnAll": true,
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "created_at",
+              "condition": "gte",
+              "keyValue": "={{ $now.minus({days: 8}).toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "node-check-for-plan",
+      "name": "Check Proposals for Plan",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        496,
+        48
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "YOUR_SUPABASE_CREDENTIAL_ID",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const proposals = $input.all().map(i => i.json).filter(p => p.id);\n\n// Only consider proposals from the most recent week_of\nconst weeks = [...new Set(proposals.map(p => p.week_of))].sort().reverse();\nconst latestWeek = weeks[0];\nconst current = latestWeek\n  ? proposals.filter(p => p.week_of === latestWeek)\n  : [];\n\nconst active = current.filter(p => ['pending', 'approved'].includes(p.status));\nconst chatId = $('Parse Callback').first().json.chatId;\n\nif (active.length > 0) {\n  const pendingCount = active.filter(p => p.status === 'pending').length;\n  const approvedCount = active.filter(p => p.status === 'approved').length;\n  let msg = '\\ud83d\\udccb Meals already proposed for this week.';\n  if (approvedCount > 0) msg += ` ${approvedCount} approved.`;\n  if (pendingCount > 0) msg += ` ${pendingCount} still pending.`;\n  return [{ json: { text: msg, chat_id: chatId, trigger: false } }];\n}\n\nreturn [{ json: { text: '\\ud83c\\udf73 Generating meal proposals...', chat_id: chatId, trigger: true } }];"
+      },
+      "id": "node-handle-planmeals",
+      "name": "Handle Planmeals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/botYOUR_TELEGRAM_BOT_TOKEN/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $json.chat_id }}"
+            },
+            {
+              "name": "text",
+              "value": "={{ $json.text }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-send-plan-response",
+      "name": "Send Planmeals Response",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        944,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "trigger-check",
+              "leftValue": "={{ $json.trigger }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-should-trigger",
+      "name": "Should Trigger Propose?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1168,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "WORKFLOW_1_PROPOSE_ID",
+        "options": {}
+      },
+      "id": "node-trigger-propose",
+      "name": "Trigger Propose",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        1456,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "deny-check",
+              "leftValue": "={{ $('Parse Callback').first().json.decision }}",
+              "rightValue": "deny",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-is-deny",
+      "name": "Is Deny?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1840,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "proposals",
+        "limit": 1,
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $('Parse Callback').first().json.proposalId }}"
+            }
+          ]
+        }
+      },
+      "id": "node-get-denied",
+      "name": "Get Denied Proposal",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        2064,
+        64
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "YOUR_SUPABASE_CREDENTIAL_ID",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "meal_history",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "week_of",
+              "fieldValue": "={{ $json.week_of }}"
+            },
+            {
+              "fieldId": "title",
+              "fieldValue": "={{ $json.title }}"
+            },
+            {
+              "fieldId": "feedback",
+              "fieldValue": "rejected"
+            }
+          ]
+        }
+      },
+      "id": "node-insert-rejected",
+      "name": "Insert Rejected History",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        2288,
+        64
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "YOUR_SUPABASE_CREDENTIAL_ID",
+          "name": "Supabase account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Callback",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Family Profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approve Proposal RPC": {
+      "main": [
+        [
+          {
+            "node": "First Click Wins?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "First Click Wins?": {
+      "main": [
+        [
+          {
+            "node": "Notify Decision",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify Already Decided",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Count Approvals": {
+      "main": [
+        [
+          {
+            "node": "2 Approvals Reached?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2 Approvals Reached?": {
+      "main": [
+        [
+          {
+            "node": "Send Locked In Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Is Valid Callback?": {
+      "main": [
+        [
+          {
+            "node": "Count Existing Approvals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Count Existing Approvals": {
+      "main": [
+        [
+          {
+            "node": "Already At Target?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already At Target?": {
+      "main": [
+        [
+          {
+            "node": "Notify Already Full",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Approve Proposal RPC",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Locked In Message": {
+      "main": [
+        [
+          {
+            "node": "Trigger Finalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Callback": {
+      "main": [
+        [
+          {
+            "node": "Is Planmeals?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Planmeals?": {
+      "main": [
+        [
+          {
+            "node": "Check Proposals for Plan",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is Valid Callback?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Proposals for Plan": {
+      "main": [
+        [
+          {
+            "node": "Handle Planmeals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Planmeals": {
+      "main": [
+        [
+          {
+            "node": "Send Planmeals Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Planmeals Response": {
+      "main": [
+        [
+          {
+            "node": "Should Trigger Propose?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Trigger Propose?": {
+      "main": [
+        [
+          {
+            "node": "Trigger Propose",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Decision": {
+      "main": [
+        [
+          {
+            "node": "Is Deny?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Deny?": {
+      "main": [
+        [
+          {
+            "node": "Get Denied Proposal",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Count Approvals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Denied Proposal": {
+      "main": [
+        [
+          {
+            "node": "Insert Rejected History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "c3684256-10be-4341-a901-262e49290016",
+  "meta": {
+    "instanceId": "10b2f4ffaf3085a33718b7f3d411bc58b3e673b4ceb89f405af2f9344780b763"
+  },
+  "id": "WORKFLOW_2_APPROVAL_ID",
+  "tags": []
+}
